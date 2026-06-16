@@ -1986,6 +1986,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
 
     # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
     if "HF_HUB_OFFLINE" not in os.environ:

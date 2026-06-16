@@ -14,6 +14,8 @@ from typing import Optional
 
 # Suppress C-level dependency warnings globally (e.g. SwigPyPacked).
 os.environ["PYTHONWARNINGS"] = "ignore"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 # Add the backend dir to sys.path early so local modules import.
 backend_dir = Path(__file__).parent
