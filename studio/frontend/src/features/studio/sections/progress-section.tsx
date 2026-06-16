@@ -331,8 +331,72 @@ function LiveGpuPanel({
   const t = useT();
   const gpu = useGpuUtilization(isTrainingRunning);
 
+  const hasDevices = gpu.devices && gpu.devices.length > 0;
+
+  const renderGpuStats = (device: any, labelPrefix: string) => {
+    return (
+      <div className="flex flex-col gap-2" key={labelPrefix}>
+        {labelPrefix && (
+          <p className="text-[10px] font-semibold text-muted-foreground tracking-wider uppercase">
+            {labelPrefix}
+          </p>
+        )}
+        <div className="grid grid-cols-2 gap-2.5">
+          <GpuStat
+            label={t("studio.progress.utilization")}
+            icon={
+              <HugeiconsIcon
+                icon={DashboardSpeed01Icon}
+                className="size-3.5"
+              />
+            }
+            value={
+              device.gpu_utilization_pct != null
+                ? `${device.gpu_utilization_pct}%`
+                : "--"
+            }
+            pct={device.gpu_utilization_pct ?? 0}
+          />
+          <GpuStat
+            label={t("studio.progress.temperature")}
+            icon={
+              <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
+            }
+            value={
+              device.temperature_c != null ? `${device.temperature_c}°C` : "--"
+            }
+            pct={device.temperature_c ?? 0}
+            max={100}
+          />
+          <GpuStat
+            label={t("studio.progress.vram")}
+            icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
+            value={
+              device.vram_used_gb != null && device.vram_total_gb != null
+                ? `${device.vram_used_gb} / ${device.vram_total_gb} GB`
+                : "--"
+            }
+            pct={device.vram_utilization_pct ?? 0}
+          />
+          <GpuStat
+            label={t("studio.progress.power")}
+            icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
+            value={
+              device.power_draw_w != null
+                ? device.power_limit_w != null
+                  ? `${device.power_draw_w} / ${device.power_limit_w} W`
+                  : `${device.power_draw_w} W`
+                : "--"
+            }
+            pct={device.power_utilization_pct ?? 0}
+          />
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3.5">
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-muted-foreground">
           {t("studio.progress.gpuMonitor")}
@@ -341,55 +405,14 @@ function LiveGpuPanel({
           {t("studio.progress.live")}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2.5">
-        <GpuStat
-          label={t("studio.progress.utilization")}
-          icon={
-            <HugeiconsIcon
-              icon={DashboardSpeed01Icon}
-              className="size-3.5"
-            />
-          }
-          value={
-            gpu.gpu_utilization_pct != null
-              ? `${gpu.gpu_utilization_pct}%`
-              : "--"
-          }
-          pct={gpu.gpu_utilization_pct ?? 0}
-        />
-        <GpuStat
-          label={t("studio.progress.temperature")}
-          icon={
-            <HugeiconsIcon icon={TemperatureIcon} className="size-3.5" />
-          }
-          value={
-            gpu.temperature_c != null ? `${gpu.temperature_c}°C` : "--"
-          }
-          pct={gpu.temperature_c ?? 0}
-          max={100}
-        />
-        <GpuStat
-          label={t("studio.progress.vram")}
-          icon={<HugeiconsIcon icon={RamMemoryIcon} className="size-3.5" />}
-          value={
-            gpu.vram_used_gb != null && gpu.vram_total_gb != null
-              ? `${gpu.vram_used_gb} / ${gpu.vram_total_gb} GB`
-              : "--"
-          }
-          pct={gpu.vram_utilization_pct ?? 0}
-        />
-        <GpuStat
-          label={t("studio.progress.power")}
-          icon={<HugeiconsIcon icon={ZapIcon} className="size-3.5" />}
-          value={
-            gpu.power_draw_w != null
-              ? gpu.power_limit_w != null
-                ? `${gpu.power_draw_w} / ${gpu.power_limit_w} W`
-                : `${gpu.power_draw_w} W`
-              : "--"
-          }
-          pct={gpu.power_utilization_pct ?? 0}
-        />
+      <div className="flex flex-col gap-4">
+        {hasDevices ? (
+          gpu.devices!.map((dev, idx) =>
+            renderGpuStats(dev, `GPU ${dev.index ?? idx}`)
+          )
+        ) : (
+          renderGpuStats(gpu, "")
+        )}
       </div>
     </div>
   );

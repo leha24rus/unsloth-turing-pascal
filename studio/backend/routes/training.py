@@ -97,8 +97,18 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 
     Polled by the frontend during training.
     """
-    from utils.hardware import get_gpu_utilization
-    return get_gpu_utilization()
+    from utils.hardware import get_visible_gpu_utilization
+    util = get_visible_gpu_utilization()
+    if util.get("devices"):
+        # Put first device metrics at top-level for backward compatibility
+        first_device = util["devices"][0]
+        for k, v in first_device.items():
+            if k not in util:
+                util[k] = v
+    else:
+        from utils.hardware import get_gpu_utilization
+        return get_gpu_utilization()
+    return util
 
 
 @router.get("/hardware/visible")
