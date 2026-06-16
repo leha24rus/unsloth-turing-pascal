@@ -1003,6 +1003,9 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
         ("is_causal_conv1d_available", _causal_conv1d_install, None),
     ):
+        if gate_name == "is_flash_linear_attention_available" and os.environ.get("UNSLOTH_STUDIO_DISABLE_FLA_KERNELS") == "1":
+            logger.info("Skipping fast-path hook for is_flash_linear_attention_available")
+            continue
         original = getattr(_iu, gate_name, None)
         if original is None:
             logger.info(
@@ -2028,6 +2031,25 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         service_name = "unsloth-studio-training-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+
+    # Disable Flash Linear Attention (FLA) Triton kernels on GPUs < Compute 8.0 (Turing/Pascal)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            resolved_gpus = config.get("resolved_gpu_ids")
+            device_idx = int(resolved_gpus[0]) if resolved_gpus else 0
+            major, minor = torch.cuda.get_device_capability(device_idx)
+            if major < 8:
+                logger.info("GPU compute capability %d.%d < 8.0 detected on GPU %d. Disabling FLA Triton kernels in favor of pure PyTorch fallback.", major, minor, device_idx)
+                os.environ["UNSLOTH_STUDIO_DISABLE_FLA_KERNELS"] = "1"
+                
+                # Monkey patch transformers utils import gates
+                import transformers.utils.import_utils as _t_import_utils
+                import transformers.utils as _t_utils
+                _t_import_utils.is_flash_linear_attention_available = lambda: False
+                _t_utils.is_flash_linear_attention_available = lambda: False
+    except Exception as exc:
+        logger.warning("Failed to apply FLA GPU-capability patch: %s", exc)
 
     apply_gpu_ids(config.get("resolved_gpu_ids"))
 
