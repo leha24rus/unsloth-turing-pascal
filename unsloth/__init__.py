@@ -170,10 +170,10 @@ else:
     except Exception:
         pass
 
-    # 3. Patch SFTTrainer, SFTConfig, TrainingArguments and modeling utils dynamically when imported
+    # 3. Patch SFTTrainer, SFTConfig, TrainingArguments, modeling utils, and peft_utils dynamically when imported
     class PatchingFinder(sys.meta_path.__class__):
         def find_spec(self, fullname, path, target=None):
-            if fullname in ("trl.trainer.sft_config", "trl.trainer.sft_trainer", "transformers.training_args", "transformers.modeling_utils"):
+            if fullname in ("trl.trainer.sft_config", "trl.trainer.sft_trainer", "transformers.training_args", "transformers.modeling_utils", "unsloth_zoo.peft_utils"):
                 if self in sys.meta_path:
                     sys.meta_path.remove(self)
                 try:
@@ -192,6 +192,8 @@ else:
                                     _patch_training_args(module)
                                 elif fullname == "transformers.modeling_utils":
                                     _patch_modeling_utils(module)
+                                elif fullname == "unsloth_zoo.peft_utils":
+                                    _patch_peft_utils(module)
                             except Exception as e:
                                 print(f"[Unsloth Turing Patch] Error patching {fullname}: {e}")
                         spec.loader.exec_module = patched_exec
@@ -315,6 +317,41 @@ else:
                         kwargs['torch_dtype'] = torch.float16
                 return orig_func(cls, *args, **kwargs)
             module.PreTrainedModel.from_pretrained = patched_from_pretrained
+
+    def _patch_peft_utils(module):
+        if hasattr(module, "get_peft_regex"):
+            _orig_get_peft_regex = module.get_peft_regex
+            def patched_get_peft_regex(
+                model,
+                finetune_vision_layers     : bool = True,
+                finetune_language_layers   : bool = True,
+                finetune_attention_modules : bool = True,
+                finetune_mlp_modules       : bool = True,
+                target_modules             = None,
+                **kwargs
+            ):
+                if "attention_tags" in kwargs:
+                    if "mixer" not in kwargs["attention_tags"]:
+                        kwargs["attention_tags"] = list(kwargs["attention_tags"]) + ["mixer"]
+                else:
+                    kwargs["attention_tags"] = ["self_attn", "attention", "attn", "mixer"]
+
+                if "mlp_tags" in kwargs:
+                    if "mixer" not in kwargs["mlp_tags"]:
+                        kwargs["mlp_tags"] = list(kwargs["mlp_tags"]) + ["mixer"]
+                else:
+                    kwargs["mlp_tags"] = ["mlp", "feed_forward", "ffn", "dense", "mixer"]
+
+                return _orig_get_peft_regex(
+                    model,
+                    finetune_vision_layers     = finetune_vision_layers,
+                    finetune_language_layers   = finetune_language_layers,
+                    finetune_attention_modules = finetune_attention_modules,
+                    finetune_mlp_modules       = finetune_mlp_modules,
+                    target_modules             = target_modules,
+                    **kwargs
+                )
+            module.get_peft_regex = patched_get_peft_regex
 
     sys.meta_path.insert(0, PatchingFinder())
     # ==========================================================
