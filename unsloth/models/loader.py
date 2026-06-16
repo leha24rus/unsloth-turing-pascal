@@ -1001,6 +1001,10 @@ class FastModel(FastBaseModel):
         elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
+        
+        # Explicitly force kwargs to float16 to prevent Hugging Face from using config.json's bfloat16
+        if not SUPPORTS_BFLOAT16:
+            kwargs["torch_dtype"] = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
         assert load_in_fp8 in (True, False, "block")
 

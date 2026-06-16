@@ -150,5 +150,174 @@ if _IS_MLX:
 
 else:
     # GPU path: load everything from _gpu_init
+    # ==========================================================
+    # CUSTOM COMPATIBILITY PATCHES FOR TURING (RTX 2080 Ti)
+    # ==========================================================
+    import torch
+    import os
+    import sys
+
+    # 1. Auto-disable Triton compile on Turing or older
+    if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+        os.environ['UNSLOTH_COMPILE_DISABLE'] = '1'
+
+    # 2. Register TokenizersBackend alias in transformers
+    try:
+        import transformers
+        from transformers import PreTrainedTokenizerFast
+        if not hasattr(transformers, "TokenizersBackend"):
+            transformers.TokenizersBackend = PreTrainedTokenizerFast
+    except Exception:
+        pass
+
+    # 3. Patch SFTTrainer, SFTConfig, TrainingArguments and modeling utils dynamically when imported
+    class PatchingFinder(sys.meta_path.__class__):
+        def find_spec(self, fullname, path, target=None):
+            if fullname in ("trl.trainer.sft_config", "trl.trainer.sft_trainer", "transformers.training_args", "transformers.modeling_utils"):
+                if self in sys.meta_path:
+                    sys.meta_path.remove(self)
+                try:
+                    from importlib.util import find_spec
+                    spec = find_spec(fullname)
+                    if spec is not None and spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                        orig_exec = spec.loader.exec_module
+                        def patched_exec(module):
+                            orig_exec(module)
+                            try:
+                                if fullname == "trl.trainer.sft_config":
+                                    _patch_sft_config(module)
+                                elif fullname == "trl.trainer.sft_trainer":
+                                    _patch_sft_trainer(module)
+                                elif fullname == "transformers.training_args":
+                                    _patch_training_args(module)
+                                elif fullname == "transformers.modeling_utils":
+                                    _patch_modeling_utils(module)
+                            except Exception as e:
+                                print(f"[Unsloth Turing Patch] Error patching {fullname}: {e}")
+                        spec.loader.exec_module = patched_exec
+                        return spec
+                finally:
+                    if self not in sys.meta_path:
+                        sys.meta_path.insert(0, self)
+            return None
+
+    def _patch_sft_config(module):
+        if hasattr(module, "SFTConfig"):
+            orig_init = module.SFTConfig.__init__
+            def patched_init(self, *args, **kwargs):
+                if 'max_seq_length' in kwargs:
+                    val = kwargs.pop('max_seq_length')
+                    if 'max_length' not in kwargs:
+                        kwargs['max_length'] = val
+                if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+                    if kwargs.get('bf16', False):
+                        kwargs['bf16'] = False
+                        kwargs['fp16'] = True
+                orig_init(self, *args, **kwargs)
+                if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+                    if getattr(self, 'bf16', False):
+                        self.bf16 = False
+                        self.fp16 = True
+            module.SFTConfig.__init__ = patched_init
+
+    def _patch_sft_trainer(module):
+        if hasattr(module, "SFTTrainer"):
+            from trl.trainer.utils import entropy_from_logits
+            def patched_compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+                mode = "train" if self.model.training else "eval"
+                labels = inputs["labels"]
+                inputs["use_cache"] = False
+                from trl import SFTTrainer
+                res = super(SFTTrainer, self).compute_loss(
+                    model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
+                )
+                if isinstance(res, tuple):
+                    loss, outputs = res
+                else:
+                    loss = res
+                    outputs = None
+                has_logits = hasattr(outputs, "logits") and type(outputs.logits).__name__ != "EmptyLogits"
+                if not self.args.use_liger_kernel and has_logits:
+                    with torch.no_grad():
+                        per_token_entropy = entropy_from_logits(outputs.logits)
+                        if "attention_mask" in inputs:
+                            attention_mask = inputs["attention_mask"]
+                            virtual_attention_mask = torch.ones(
+                                attention_mask.size(0), self.num_virtual_tokens, device=attention_mask.device
+                            )
+                            attention_mask = torch.cat((virtual_attention_mask, attention_mask), dim=1)
+                            entropy = torch.sum(per_token_entropy * attention_mask) / attention_mask.sum()
+                        elif "position_ids" in inputs:
+                            entropy = torch.mean(per_token_entropy)
+                        else:
+                            raise ValueError("Expected 'attention_mask' or 'position_ids' in inputs.")
+                        entropy = self.accelerator.gather_for_metrics(entropy).mean().item()
+                    self._metrics[mode]["entropy"].append(entropy)
+                if mode == "train":
+                    if "attention_mask" in inputs:
+                        num_tokens_in_batch = self.accelerator.gather_for_metrics(inputs["attention_mask"].sum()).sum().item()
+                    elif "position_ids" in inputs:
+                        local_num_tokens = torch.tensor(inputs["position_ids"].size(1), device=inputs["position_ids"].device)
+                        num_tokens_in_batch = self.accelerator.gather_for_metrics(local_num_tokens).sum().item()
+                    else:
+                        raise ValueError("Expected 'attention_mask' or 'position_ids' in inputs.")
+                    self._total_train_tokens += num_tokens_in_batch
+                self._metrics[mode]["num_tokens"] = [self._total_train_tokens]
+                if not self.args.use_liger_kernel and has_logits:
+                    with torch.no_grad():
+                        if "shift_labels" in inputs:
+                            shift_logits = outputs.logits.contiguous()
+                            shift_labels = inputs["shift_labels"]
+                        else:
+                            shift_logits = outputs.logits[..., :-1, :].contiguous()
+                            shift_labels = labels[..., 1:].contiguous()
+                        shift_logits = shift_logits[:, self.num_virtual_tokens :, :]
+                        predictions = shift_logits.argmax(dim=-1)
+                        mask = shift_labels != -100
+                        correct_predictions = (predictions == shift_labels) & mask
+                        total_tokens = mask.sum()
+                        correct_tokens = correct_predictions.sum()
+                        correct_tokens = self.accelerator.gather_for_metrics(correct_tokens)
+                        total_tokens = self.accelerator.gather_for_metrics(total_tokens)
+                        total_sum = total_tokens.sum()
+                        accuracy = (correct_tokens.sum() / total_sum).item() if total_sum > 0 else 0.0
+                        self._metrics[mode]["mean_token_accuracy"].append(accuracy)
+                        if self.aux_loss_enabled:
+                            aux_loss = outputs.aux_loss
+                            aux_loss = self.accelerator.gather_for_metrics(aux_loss).mean().item()
+                            self._metrics[mode]["aux_loss"].append(aux_loss)
+                return (loss, outputs) if return_outputs else loss
+            module.SFTTrainer.compute_loss = patched_compute_loss
+
+    def _patch_training_args(module):
+        if hasattr(module, "TrainingArguments"):
+            orig_init = module.TrainingArguments.__init__
+            def patched_init(self, *args, **kwargs):
+                if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+                    if kwargs.get('bf16', False):
+                        kwargs['bf16'] = False
+                        kwargs['fp16'] = True
+                orig_init(self, *args, **kwargs)
+                if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+                    if getattr(self, 'bf16', False):
+                        self.bf16 = False
+                        self.fp16 = True
+            module.TrainingArguments.__init__ = patched_init
+
+    def _patch_modeling_utils(module):
+        if hasattr(module, "PreTrainedModel"):
+            orig_func = module.PreTrainedModel.from_pretrained.__func__
+            @classmethod
+            def patched_from_pretrained(cls, *args, **kwargs):
+                if torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] < 8:
+                    torch_dtype = kwargs.get('torch_dtype')
+                    if torch_dtype in (torch.bfloat16, "bfloat16", "auto"):
+                        kwargs['torch_dtype'] = torch.float16
+                return orig_func(cls, *args, **kwargs)
+            module.PreTrainedModel.from_pretrained = patched_from_pretrained
+
+    sys.meta_path.insert(0, PatchingFinder())
+    # ==========================================================
+
     from ._gpu_init import *
     from ._gpu_init import __version__

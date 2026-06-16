@@ -2345,10 +2345,12 @@ def patch_gradient_accumulation_fix(Trainer):
                         globals(),
                     )
 
-                    # Replace loss*= with loss = loss *
+                    # Replace loss*= with loss = loss * (expr)
+                    # Wraps the scaling expression in parentheses to ensure correct precedence
+                    # and avoids in-place tensor modification errors.
                     function = re.sub(
-                        r"loss[\s]{0,}\*\=",
-                        "loss = loss *",
+                        r"loss\s*\*=\s*(.+?)(?=\n|$)",
+                        r"loss = loss * (\1)",
                         function,
                     )
                     exec(function, globals())
