@@ -2274,6 +2274,30 @@ async def get_download_progress(
         if not _is_valid_repo_id(repo_id):
             return _empty
 
+        # Map repo_id to the bnb-4bit quantized version if it is registered in Unsloth.
+        # This ensures the progress checks target the actual quantized model directory 
+        # and size being downloaded.
+        try:
+            from unsloth.models.mapper import __INT_TO_FLOAT_MAPPER
+            repo_id_lower = repo_id.lower()
+            mapped_repo_id = repo_id
+            for bnb_model, originals in __INT_TO_FLOAT_MAPPER.items():
+                if repo_id_lower == bnb_model.lower():
+                    mapped_repo_id = bnb_model
+                    break
+                if isinstance(originals, str):
+                    if repo_id_lower == originals.lower():
+                        mapped_repo_id = bnb_model
+                        break
+                else:
+                    for orig in originals:
+                        if repo_id_lower == orig.lower():
+                            mapped_repo_id = bnb_model
+                            break
+            repo_id = mapped_repo_id
+        except Exception:
+            pass
+
         from huggingface_hub import constants as hf_constants
 
         cache_dir = Path(hf_constants.HF_HUB_CACHE)
