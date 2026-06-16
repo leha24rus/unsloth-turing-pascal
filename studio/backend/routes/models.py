@@ -2281,19 +2281,27 @@ async def get_download_progress(
             from unsloth.models.mapper import __INT_TO_FLOAT_MAPPER
             repo_id_lower = repo_id.lower()
             mapped_repo_id = repo_id
+            
+            def _find_in_originals(originals, target_lower) -> bool:
+                if isinstance(originals, str):
+                    return target_lower == originals.lower()
+                elif isinstance(originals, dict):
+                    for val in originals.values():
+                        if _find_in_originals(val, target_lower):
+                            return True
+                elif isinstance(originals, (list, tuple, set, frozenset)):
+                    for item in originals:
+                        if _find_in_originals(item, target_lower):
+                            return True
+                return False
+
             for bnb_model, originals in __INT_TO_FLOAT_MAPPER.items():
                 if repo_id_lower == bnb_model.lower():
                     mapped_repo_id = bnb_model
                     break
-                if isinstance(originals, str):
-                    if repo_id_lower == originals.lower():
-                        mapped_repo_id = bnb_model
-                        break
-                else:
-                    for orig in originals:
-                        if repo_id_lower == orig.lower():
-                            mapped_repo_id = bnb_model
-                            break
+                if _find_in_originals(originals, repo_id_lower):
+                    mapped_repo_id = bnb_model
+                    break
             repo_id = mapped_repo_id
         except Exception:
             pass
